@@ -33,10 +33,8 @@ os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
 import numpy as np
 import time as _time
 import convenience_routines as cr
-from tdvp_sparse import (
-    prepare_full_params, pack_state, unpack_state,
-    compute_ffdagger_sp, compute_fdaggerc_sp, solve_lambda_from_F2,
-)
+from tdvp_core import prepare_full_params, pack_state, unpack_state, compute_fdaggerc_sp
+from tdvp_sparse import compute_ffdagger_sp, solve_lambda_from_F2
 
 
 # ---------- 期待値ヘルパ（複素のまま; dense/sparse 両対応） ----------

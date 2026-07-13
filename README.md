@@ -61,8 +61,8 @@ td_gGA_reproduce/
 ├── reference_figures/                     完成版の図（見比べ用）
 └── solver/                                コード一式（下記）
     ├── td_gGA_solver.py                    ★メインの時間発展ソルバー（run/solve_static等）
-    ├── tdvp_core.py                        ソルバーが使う基礎ヘルパー(H_emb構築・pack/unpack等)
-    ├── tdvp_sparse.py                      同上、疎行列版ヘルパー(B=5,7で使用)
+    ├── tdvp_core.py                        ソルバーが使う基礎ヘルパー(演算子ロード・pack/unpack等)
+    ├── tdvp_sparse.py                      同上、⟨f†f⟩計算とΛ初期値ソルバー
     ├── gga_static_solver.py                静的gGAソルバー(GAクラス、クエンチ前の平衡状態を解く)
     ├── ed_solver.py                        埋め込みハミルトニアンの厳密対角化
     ├── convenience_routines.py             汎用の行列補助関数
@@ -96,14 +96,19 @@ td_gGA_reproduce/
 | 旧名（開発リポジトリ） | 新名（本パッケージ） | 役割 |
 |---|---|---|
 | `td_gGA_solver_paperconv.py` | `td_gGA_solver.py` | 実際に使う、正しい時間発展ソルバー |
-| `td_gGA_solver_routeA.py` | `tdvp_core.py` | ヘルパー関数群（自身の時間発展ドライバは未使用） |
-| `td_gGA_solver_routeC.py` | `tdvp_sparse.py` | ヘルパー関数群・疎行列版（自身の時間発展ドライバは未使用） |
+| `td_gGA_solver_routeA.py` | `tdvp_core.py` | ヘルパー関数群のみ（自身の時間発展ドライバは削除済み） |
+| `td_gGA_solver_routeC.py` | `tdvp_sparse.py` | ヘルパー関数群のみ（自身の時間発展ドライバは削除済み） |
 | `ga_mainfin_routeA.py` | `gga_static_solver.py` | 静的解（クエンチ前の平衡状態）を解く |
 
-`tdvp_core.py` / `tdvp_sparse.py` はファイル内に自分自身の時間発展ドライバも
-含んでいるが、規約バグ（B≥3でエネルギー非保存等）があり**使われていない**。
-実際に使われているのは `td_gGA_solver.py` から import されるヘルパー関数のみ
-（各ファイル冒頭に注記あり）。詳しい経緯は `POSTMORTEM_2026-07-07.md` を参照。
+`td_gGA_solver_routeA.py`/`td_gGA_solver_routeC.py`（現 `tdvp_core.py`/`tdvp_sparse.py`）は
+元々それぞれ独立した「独自の時間発展ドライバ」一式だった（開発時の呼称で Route A / Route C）。
+どちらも規約バグ（符号・共役・転置の混在）で B≥3 のエネルギー保存や B 依存性の再現に
+失敗しており、最終的に正しい規約で書き直したのが `td_gGA_solver.py` である。
+2026-07-13 の配布パッケージ整理で、この2ファイルから **未使用のドライバ本体を削除**し、
+`td_gGA_solver.py` が実際に import して使っているヘルパー関数だけを残した
+（`tdvp_core.py`: 661→195行、`tdvp_sparse.py`: 792→65行、`gga_static_solver.py`も
+未使用メソッドを削除して1359→757行。全体で3273→1476行、約55%削減）。
+経緯の詳細は `POSTMORTEM_2026-07-07.md` を参照。
 
 ## 到達している精度（既定セッティング）
 
