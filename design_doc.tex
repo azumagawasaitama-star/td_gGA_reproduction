@@ -298,23 +298,64 @@ $B=5$ & $2.8\times10^{-5}$ & $1.2\times10^{-3}$（RK4 離散化誤差、$dt$ で
 \end{tabular}
 \end{center}
 
-\section{計算コストの目安}
+\section{計算コストの目安（2026-07-13/14 実測、$U_i=0.05\to U_f=2.5$, $t_{\max}=10$）}
 
 \begin{center}
-\begin{tabular}{lccccc}
+\begin{tabular}{lcccccc}
 \toprule
-$B$ & $\dim\Phi$ & 演算子生成 & 静的（初回のみ） & TD 1クエンチ & パス \\
+$B$ & $\dim\Phi$ & 静的（初回のみ） & TD 1クエンチ & $|\Delta E/E|_{\max}$ & $F_2^{\max}$ & パス \\
 \midrule
-1 & 6 & 一瞬 & 数秒 & 数秒 & dense \\
-3 & 70 & 数秒 & $\sim$1.5分 & 数秒 & dense \\
-5 & 924 & $\sim$1分 & $\sim$25分 & $\sim$20分 & dense（$\sim$1GB） \\
-7 & 12870 & $\sim$10分 & 数時間（見込み） & 数分（見込み） & \textbf{sparse} \\
+1 & 6     & 11.7秒            & 0.2秒   & $3.6\times10^{-7}$ & $1.2\times10^{-5}$ & dense \\
+3 & 70    & 92.5秒（1.5分）   & 2.0秒   & $3.0\times10^{-8}$ & $3.6\times10^{-6}$ & dense \\
+5 & 924   & 2795秒（46.6分）  & 845秒（14.1分） & $9.9\times10^{-8}$ & $7.4\times10^{-6}$ & dense \\
+7 & 12870 & 9548秒（159分$\approx$2.65時間） & 585秒（9.7分） & $2.8\times10^{-8}$ & $1.6\times10^{-4}$ & sparse \\
 \bottomrule
 \end{tabular}
 \end{center}
 
+$\dim\Phi=\binom{2(1+B)}{1+B}$ は漸近的に $\sim4^B$ で増える（実測比 $70/6{=}11.7$,
+$924/70{=}13.2$, $12870/924{=}13.9$ と $4^2{=}16$ に単調接近、$B$ が2ずつ増えるため
+$4^2$ が漸近値）。
+
+\textbf{ボトルネックは静的計算}であり、TD側ではない。$B=7$ の静的計算が特に重い
+（2.65時間）のは、\S6 の断熱ラダー（$U=0.6\to0.05$ を5段階、各段で
+\code{optimize\_selfc} を1回ずつ）を要するため。TD側は $B=7$（sparse）の方が
+$B=5$（dense）より速い（585秒 vs 845秒）という逆転が実測された——
+理由と一般化については次節参照。
+
 疎行列パスは近似なし（一体演算子の Fock 行列は 1 列あたり非零 $\le 1$）。
 $B=3$ で dense と厳密一致（$\max|\Delta d|=2\times10^{-13}$）を検証済み。
+
+\subsection*{dense/sparse の使い分けの閾値について（2026-07-14 追記）}
+
+\code{run()} は既定で \code{sparse=(B\ge6)} を使う。この閾値は\textbf{メモリ制約}
+（dense 行列が $B=7$ で $\sim$1.3GB/個になる）から決めたものであり、\textbf{速度}
+を根拠にした閾値ではない。$\hat H_{\rm emb}$ の非零率は $B=3$ で12.7\%、$B=5$ で
+2.1\%（\S6）——つまり $B=5$ でも $\hat H_{\rm emb}$ の98\%はゼロで、dense パス
+（\code{build\_H\_emb\_paper}）はこのゼロに対しても律儀に演算している。
+
+$B=7$(sparse) の TD が $B=5$(dense) より速かった実測結果を受けて、$B=5$ を
+sparse パスで動かした場合の速度を検証した：
+
+\begin{center}
+\begin{tabular}{lccc}
+\toprule
+& TD所要時間 & 速度比 & $d(t)$ 最大差(dense比) \\
+\midrule
+dense（既定） & 825.6秒（13.8分） & --- & --- \\
+sparse & 6.6秒 & \textbf{125$\times$} & $1.2\times10^{-4}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{結論（2026-07-14 実測・確定）}：$B=5$ でも sparse パスの方が \textbf{125倍速い}。
+既定の \code{sparse=(B\ge6)} は速度の観点からは不適切な閾値であり、実質的にメモリが
+問題にならない限り常に sparse を使うべきである（$B=3$ 以下は $\dim\Phi$ が小さく
+dense でも数秒で終わるため実害はないが、$B=5$ では \textbf{13.8分 vs 6.6秒} と体感が
+全く変わる）。$d(t)$ の最大差 $1.2\times10^{-4}$ は両パスが同一の $\hat H_{\rm emb}\Phi$
+を計算している（\S6「疎行列パスは近似なし」）ことと整合的な小さな数値差で、
+どちらも正しい物理を再現している。今後の課題として \code{run()} の既定閾値
+（\code{sparse=(B\ge6)} $\to$ 例えば \code{sparse=(B\ge3)} 相当）の見直しを推奨する。
 
 \section{運用ルール}
 
