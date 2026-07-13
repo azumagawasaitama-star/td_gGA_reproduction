@@ -329,4 +329,190 @@ $\to$ \code{plot\_all.py} に描画を足す、が標準手順。
 含めていない。必要な場合は開発ワークスペース側を参照）。
 \end{itemize}
 
+\appendix
+\section{付録: 関数リファレンス（2026-07-13 追記）}
+
+全ソースファイルの主要関数・メソッドを、役割の日本語説明と対応する数式付きで一覧する。
+未使用と判明したものは \textbf{[未使用]} と明記した（削除は行っていない・要判断のもの）。
+
+\subsection*{td\_gGA\_solver.py（メイン時間発展ソルバー）}
+
+\begin{longtable}{p{0.28\textwidth}p{0.66\textwidth}}
+\toprule
+関数 & 説明・対応式 \\
+\midrule
+\code{hole\_cplx(Phi,params)} & ホール行列 $\Delta_h=\langle f f^\dagger\rangle$（スピン平均、複素のまま）\\
+\code{fdc\_cplx(Phi,params)} & $\langle f^\dagger c\rangle$（複素のまま、(nq,1)）\\
+\code{\_eigh\_clip(Delta)} & $\Delta$ をエルミート化し \code{eigh}、固有値を $[10^{-12},1{-}10^{-12}]$ にクリップ（数値安全化）\\
+\code{g\_inv\_of(Delta)} & $g^{-1}=[\Delta(1-\Delta)]^{-1/2}$（\code{\_eigh\_clip} 経由）\\
+\code{loewner\_dg(Delta,M)} & $g(\Delta)=\sqrt{\Delta(1-\Delta)}$ の $\Delta$ 方向 $M$ への Fréchet 微分。
+Loewner 行列 $K_{ij}=\frac{g(\lambda_i)-g(\lambda_j)}{\lambda_i-\lambda_j}$（$i=j$ or 縮退は $g'$）を
+固有基底で Schur 積してから戻す \\
+\code{compute\_RDLc\_paper(Phi,n\_omega,params)} & 本ソルバーの核。$\Delta_e=\langle f^\dagger f\rangle$、
+$R=g^{-1}\langle f^\dagger c\rangle$、$B=\sum_f w_f\omega_f n_f$、$D=\overline{g^{-1}BR}$、
+$M=RD^{\mathsf T}+\overline{D}R^\dagger$、$\Lambda^c=(\mathrm{d}g_{\Delta_e}[M])^{\mathsf T}$ を一括計算。
+\textbf{呼び出し元}: \code{rhs\_paper()}（ODEの各評価）と \code{observe()}（各記録ステップ）の
+両方から。\textbf{目的}: 今の状態 $(\Phi,n(\omega))$ から、$\hat H_{\rm emb}$ 構築とエネルギー・
+$F_2$ 評価に必要な $R,D,\Lambda^c$ をまとめて出す \\
+\code{build\_H\_emb\_paper(D\_vec,Lmbdac,params)} & $\hat H_{\rm emb}=\hat H_{\rm const}
++\sum_p[D_p f_p^\dagger c+\overline{D_p}c^\dagger f_p]+\sum_{pq}\Lambda^c_{pq}f_qf_p^\dagger$
+を密行列で構築（$B\le5$）\\
+\code{apply\_H\_emb\_sp(D\_vec,Lmbdac,Phi,params)} & 上と同一の演算子を、密行列を作らず
+$\hat H_{\rm emb}\Phi$ として疎行列積の和で直接評価（$B\ge6$）\\
+\code{prepare\_sparse\_params(ga,U\_final,N\_freq)} & $B\ge6$ 用、演算子を疎のまま保持する軽量 params
+（\code{tdvp\_helpers.prepare\_full\_params} の疎行列版）\\
+\code{rhs\_paper(t,y,params)} & ODE 右辺。$i\partial_t\Phi=\hat H_{\rm emb}\Phi$、
+$\partial_t n(\omega)=-i\omega[RR^\dagger,n(\omega)]$（式(16),(17)に対応）。
+\textbf{呼び出し元}: \code{run()} 内の \code{solve\_ivp} から毎ステップ（棄却ステップ含め）
+自動的に呼ばれる。\textbf{目的}: 時間発展方程式の心臓部、$\mathrm{d}y/\mathrm{d}t$ を返すだけ \\
+\code{save\_static/load\_static/get\_static} & 静的解（$\Phi_0,\Lambda,D,\Lambda^c,R$,
+\code{fdaggerc,ffdagger}）の \code{static\_cache/} への保存・復元・キャッシュ判定 \\
+\code{save\_run(rec,B,U\_i,U\_f)} & TD 結果 \code{rec} を \code{data/B\{B\}/} へ保存 \\
+\code{solve\_static(B,U\_i,T\_gGA)} & \code{GA.optimize\_selfc} を呼ぶ薄いラッパー（$\delta U$ 間で使い回すため分離）。
+\textbf{呼び出し元}: \code{run(ga=None)} の内部、または \code{get\_static}
+（キャッシュ無しの場合）から。\textbf{目的}: クエンチ「前」の平衡状態（$t=0$ の出発点）を作る \\
+\code{run(B,U\_i,U\_f,\ldots)} & 1本のクエンチの全工程：ゲージ回転で $\Lambda_{\rm eq}$ を構築
+$\to n_0(\omega)=f(\omega R_0R_0^{\mathsf T}+\Lambda_{\rm eq})$
+$\to$ \code{solve\_ivp}（既定 DOP853, 適応刻み）$\to$ 各ステップで \code{observe()} が
+$d,E,|\Delta E/E|,F_2,\sqrt{D^\dagger D}$, ghost split, $\mathrm{eig}\,\Lambda^c$ を記録。
+\textbf{呼び出し元}: \code{run\_fig2a.py} 等の各実行スクリプトから直接。
+\textbf{目的}: 「クエンチ1本を丸ごと実行して結果を返す」最上位のエントリーポイント \\
+\bottomrule
+\end{longtable}
+
+\subsection*{tdvp\_helpers.py（ソルバーの部品）}
+
+\begin{longtable}{p{0.28\textwidth}p{0.66\textwidth}}
+\toprule
+関数 & 説明・対応式 \\
+\midrule
+\code{setup\_frequency\_grid(N\_freq)} & Gauss--Legendre 求積点 $\times$ 半円 DOS
+$\rho(\omega)=\frac{2}{\pi}\sqrt{1-\omega^2}$ でバス周波数格子 $(\omega_f,w_f,\rho_f)$ を生成 \\
+\code{pack\_state(Phi,n\_omega)} / \code{unpack\_state} & ODE 状態ベクトル
+$y=(\mathrm{Re}\Phi,\mathrm{Im}\Phi,\mathrm{Re}\,n(\omega),\mathrm{Im}\,n(\omega))$ と
+$(\Phi,n(\omega))$ の相互変換 \\
+\code{prepare\_full\_params(ga\_obj,U\_final,N\_freq)} & 演算子 npz 群をディスクから読み込み、
+$M_D,M_{\Lambda^c},\hat H_{\rm const}$ 等 $\hat H_{\rm emb}$ 組立に必要な全行列を事前計算して
+params 辞書にまとめる（$B\le5$ 密行列版。ここが唯一のディスク I/O）\\
+\code{compute\_fdaggerc\_sp(Phi,params)} & $|\Phi\rangle$ から $\langle f^\dagger c\rangle$
+（空間軌道基底、スピン対称化済み）を計算。\code{\_sp} は sparse ではなく spatial の意 \\
+\code{compute\_ffdagger\_sp(Phi,params)} & $|\Phi\rangle$ から電子密度行列
+$\langle f^\dagger f\rangle=I-\text{hole}$ を計算 \\
+\code{solve\_lambda\_from\_F2(ffd\_target,R,\ldots)} & 拘束
+$\int\rho(\omega)f(\omega RR^\dagger+\Lambda)\,d\omega=\text{ffd\_target}$ を満たす $\Lambda$ を
+\code{least\_squares} で求める（$t=0$ の初期条件 $\Lambda_{\rm eq}$ 取得専用）\\
+\bottomrule
+\end{longtable}
+
+\subsection*{gga\_static\_solver.py（静的ソルバー、クラス \code{GA}）}
+
+\begin{longtable}{p{0.28\textwidth}p{0.66\textwidth}}
+\toprule
+メソッド & 説明・対応式 \\
+\midrule
+\code{\_\_init\_\_(U,nghost,nphysorb,T,\ldots)} & パラメータを保存し \code{edSolver}
+（ed\_solver.py）を生成、演算子 npz を準備。$H\_list=$
+\code{cr.generate\_orthonormal\_basis(nqspo)}（実対称行列の正規直交基底）も構築 \\
+\code{dos\_sc(x)} & 半円 DOS $\rho(x)=\frac{2}{\pi}\sqrt{1-x^2}$（ベーテ格子、半バンド幅$=1$）\\
+\code{root\_mu\_Hemb(mu)} / \code{calc\_mu\_Hemb()} & $\hat H_{\rm emb}$ に $\mu$ を直接含め、
+粒子数を合わせる $\mu$ を求根（\code{root\_mu\_Hemb} は残差、\code{calc\_mu\_Hemb} はラッパー）\\
+\code{calc\_Lmbdac(Lmbda,Delta)} & $\Lambda^c=-\Lambda-\mathrm{d}F_{1-\Delta}[M]$（実対称 Loewner、
+\code{cr.dF} 経由）— 式(19) の実装 \\
+\code{solve\_Hemb()} & \code{ed\_solver.solve\_Hemb} を呼び $\hat H_{\rm emb}$ を対角化する薄いラッパー \\
+\code{fix\_gauge(R,Lmbda,\ldots)} & $\Lambda^c$ を対角化する基底へ回転し、$D,R$ の符号・並び順を
+固定するゲージ固定（$W=\code{permmat}\cdot\code{phasemat}\cdot\code{transmat}^{\mathsf T}$）\\
+\code{optimize\_selfc(rinit,lambdainit,muinit)} & 静的 gGA 方程式の自己無撞着ループ本体。
+外側ループで $R,\Lambda,\mu$ を更新、内側で $F_1=\langle f^\dagger c\rangle-R^{\mathsf T}g(\Delta)=0$,
+$F_2=\langle f^\dagger f\rangle-\Delta=0$ を \code{cost\_func} 経由 \code{least\_squares} で解く。
+\textbf{呼び出し元}: \code{td\_gGA\_solver.solve\_static()} から（\code{b7\_ladder.py} 等では直接）。
+\textbf{目的}: 与えられた $U$ で「これ以上動かない」平衡解（$R,\Lambda,\Phi$）を見つける、
+静的計算の本体そのもの \\
+\code{cost\_func(xinit)} & \code{optimize\_selfc} 内の \code{least\_squares} に渡す $F_1,F_2$ 残差ベクトル \\
+\code{\_fix\_degenerate\_phi(Delta,\ldots)} & $\hat H_{\rm emb}$ が縮退している場合、縮退部分空間内で
+$\|\langle f^\dagger f\rangle-\Delta\|$ を最小化する $|\Phi\rangle$ を選び直す（COBYLA） \\
+\code{calc\_Z(Lmbda,R)} & 準粒子繰り込み因子 $Z$ の一般 $n_{\rm qspo}$ 閉形式
+（$\propto(\sum_i r_i^2\prod_{j\neq i}\lambda_j)^2$ 型）\\
+\code{make\_Hqp(x)} & 準粒子ハミルトニアン $\hat H_{\rm qp}=\omega RR^\dagger+\Lambda$ の構築 \\
+\code{calc\_Delta()} & $\Delta=\int\rho(\omega)\,f(\omega RR^{\mathsf T}+\Lambda)\,d\omega$
+（\code{scipy.integrate.quad}）— 式(5) \\
+\code{calc\_D()} & $D=[\Delta(1-\Delta)]^{-1/2}R^{\mathsf T}B$（$B$ は運動エネルギー行列）— 式(18) \\
+\code{calc\_Eqp()} & 準粒子エネルギー $E_{\rm qp}=2\,\mathrm{Tr}[RR^\dagger B]$ \\
+\midrule
+\code{optimize\_selfc\_metallic / \_new / \_offdiag / \_routeA}, \code{cost\_func\_Delta},
+\code{calc\_phase\_diagram} & \textbf{[削除済み]} 2026-07-13 の整理でいずれも呼び出し元ゼロと
+確認し削除（経緯は README.md「補足: ファイル名について」参照）\\
+\bottomrule
+\end{longtable}
+
+\subsection*{ed\_solver.py（クラス \code{edSolver}、埋め込みハミルトニアンの厳密対角化）}
+
+\begin{longtable}{p{0.28\textwidth}p{0.66\textwidth}}
+\toprule
+メソッド & 説明・対応式 \\
+\midrule
+\code{\_\_init\_\_} & 軌道数（物理・ゴースト・バス）を設定し \code{build\_creation\_ops}
+$\to$ \code{build\_op\_prods} で演算子一式を準備 \\
+\code{build\_creation\_ops()} & Fock 空間の全配置に対し、フェルミオン生成演算子 $f^\dagger_o$
+（ビット文字列表現、Jordan--Wigner 符号付き）を疎行列で構築 \\
+\code{build\_op\_prods(FH\_list)} & 一体演算子積（\code{phys-phys}, \code{bath-phys},
+\code{phys-bath}, \code{bath-bath}）・二体演算子積・$\hat S^2$ を半充填ブロックのみ npz 保存
+（\textbf{$B$ ごとに同名上書き}）\\
+\code{set\_parameters(D,H1,Lc,U)} & $D,H_1,\Lambda^c$ をスピン空間に複製し、二体相互作用テンソル
+$V_{2E}$（$U$）を構築 \\
+\code{read\_prod\_1e(facMat,\ldots)} & ディスクの一体演算子積を読み込み、係数行列 \code{facMat}
+との線形結合、または期待値 $\code{facMat}^{\mathsf T}(\text{op})\code{facMat}$ を計算 \\
+\code{build\_Hemb(D,H1,Lc,U)} & $\hat H_{\rm emb}=$ 一体項$(H_1,D,\Lambda^c)$ + 二体項$(U)$
++ スピンペナルティ $10\hat S^2$（一重項選択）を疎行列で構築 \\
+\code{solve\_Hemb(X,U)} & $\hat H_{\rm emb}$ を \code{primme.eigsh}（\code{which='SA'}）で疎対角化し
+基底状態を取得、密度行列・局所エネルギー・二重占有を計算。
+\textbf{呼び出し元}: \code{GA.solve\_Hemb()} 経由で \code{optimize\_selfc} の毎イテレーションから。
+\textbf{目的}: 今の $D,\Lambda^c$ での埋め込み多体基底状態 $|\Phi\rangle$ を得る（ED 部分の本体） \\
+\code{sanity\_check()} & 半充填・一重項・基底状態であることを検証（不一致なら例外） \\
+\code{update\_eig\_vec(Phi)} & 縮退空間内で選び直した $\Phi$ に固有ベクトルを更新し密度行列を再計算 \\
+\code{calc\_density\_matrix()} & 1粒子密度行列 $\langle c^\dagger c\rangle,\langle f^\dagger c\rangle,
+\langle f^\dagger f\rangle$ を計算（\code{lspin\_sym} ならスピン対称化）\\
+\code{calc\_double\_docc(idx)} & 二重占有数 $\langle n_\uparrow n_\downarrow\rangle$ を計算 \\
+\code{calc\_Eloc()} & 局所一体エネルギー $E_{1{\rm loc}}$・二体エネルギー $E_{2{\rm loc}}$ を計算 \\
+\bottomrule
+\end{longtable}
+
+\subsection*{convenience\_routines.py（Lanatà 系の汎用行列補助関数）}
+
+\begin{longtable}{p{0.28\textwidth}p{0.66\textwidth}}
+\toprule
+関数 & 説明・対応式 \\
+\midrule
+\code{calc\_Fermi0(x,T)} & Fermi 関数（$T=0$ では階段関数 $\theta(-x)$）\\
+\code{funcMat(H,function,T)} & エルミート行列 $H$ の汎用行列関数 $f(H)=U f(\mathrm{diag})U^\dagger$（\code{eigh} ベース）\\
+\code{generate\_orthonormal\_basis(N)} & $N\times N$ 実対称行列の Frobenius 内積に関する正規直交基底
+（\code{GA.\_\_init\_\_} の \code{H\_list} 構築に使用）\\
+\code{Hermitian\_list(N)} & $N\times N$ エルミート行列の正準基底（対角 + 実対称非対角 + 虚反対称非対角）\\
+\code{realHcombination(x,H\_list)} / \code{inverse\_realHcombination} & 実係数ベクトル
+$x$ と基底 $H\_list$ の間の相互変換：$H=\sum_n x_n[H\_list]_n$ ↔ $x_n=\mathrm{Tr}[H\_list_n H]$ \\
+\code{dF(A,H,function,d\_function)} & Loewner の定理による行列微分
+$\mathrm{D}f(A)(H)=f^{[1]}(A)\circ H$（\code{GA.calc\_Lmbdac} が使用）\\
+\code{calc\_C(H,T)} & 密度行列 $C=f_{\rm Fermi}(H)$（\code{funcMat} 経由、多用される中核関数）\\
+\code{denRm1(x)} / \code{denR(x)} / \code{ddenRm1(x)} & $[x(1-x)]^{\pm1/2}$ とその微分
+$\frac{d}{dx}[x(1-x)]^{1/2}=\frac{0.5-x}{[x(1-x)]^{1/2}}$ \\
+\code{duplicate\_in\_spin\_space(A)} & 軌道空間の行列 $A$ をスピン空間へ複製：
+$\tilde A_{2i,2j}=\tilde A_{2i+1,2j+1}=A_{ij}$ \\
+\code{spin\_symmetrize(A)} & 上の逆操作、スピンアップ・ダウンを平均：
+$A^{\rm sym}_{ij}=\frac12(A_{2i,2j}+A_{2i+1,2j+1})$ \\
+\midrule
+\code{complexHcombination}, \code{inverse\_complexHcombination}, \code{get\_blocks},
+\code{dF\_numerical} & \textbf{[未使用]} 呼び出し元なし（複素版基底変換・行列ブロック分割・数値微分の
+検証用ヘルパー、Lanatà 系の遺産）\\
+\code{calc\_offdiag\_dd} & \textbf{[未使用・要修正候補]} 未定義変数（\code{D}, \code{fdaggerc},
+\code{Lmbdac}, \code{self}, \code{optimize}）を参照しており、\textbf{呼び出すと即エラーになる}。
+どこからも呼ばれていない \\
+\bottomrule
+\end{longtable}
+
+\subsection*{lattice.py}
+
+\textbf{[未使用]} 一般的な tight-binding 格子クラス（2D 正方・三角・グラフェン・3D 立方対応、
+Fourier 変換・DOS 計算メソッド付き）。\code{gga\_static\_solver.py} が
+\code{from lattice import *} しているが、実際に呼ばれるメソッドは一切ない。本パッケージが使う
+半円形 DOS は \code{GA.dos\_sc} に別途ハードコードされており、このファイルの機能は使われていない。
+
 \end{document}
