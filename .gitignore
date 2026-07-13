@@ -1,0 +1,17 @@
+# 演算子ファイル（実行時に solver/ 直下へ自動生成される。B が変わると内容も変わるので追跡しない）
+/solver/*.npz
+!/solver/paper_fig2a_digitized.npz
+!/solver/paper_fig2a_B57_digitized.npz
+
+# Python
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# LaTeX ビルド生成物
+*.aux
+*.log
+*.out
+*.toc

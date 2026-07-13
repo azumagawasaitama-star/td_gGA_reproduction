@@ -1,0 +1,319 @@
+\documentclass[11pt]{ltjsarticle}
+\usepackage{luatexja}
+\usepackage{amsmath,amssymb,bm}
+\usepackage[margin=22mm]{geometry}
+\usepackage{booktabs,longtable,array}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{hyperref}
+\hypersetup{colorlinks=true, linkcolor=blue!60!black, urlcolor=blue!60!black}
+\lstset{basicstyle=\ttfamily\small, columns=fullflexible, keepspaces=true}
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\file}[1]{\textbf{\texttt{#1}}}
+
+\title{TD-gGA クリーンワークスペース設計図\\
+\large コード構成・データフロー・各ファイルの責務}
+\author{td\_gGA プロジェクト}
+\date{2026年7月8日}
+
+\begin{document}
+\maketitle
+
+\section{全体像}
+
+本ワークスペースは Guerci--Capone--Lanat\`a, PRR \textbf{5}, L032023 (2023) の
+TD-gGA（時間依存ゴースト Gutzwiller 近似）の検証済み実装である。
+設計は次の3層に分離されている：
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+層 & 役割 & 成果物の置き場 \\
+\midrule
+静的計算 & 平衡 gGA 解（初期条件の材料） & \code{static\_cache/B\{B\}\_Ui\{..\}\_T\{..\}.npz} \\
+時間発展 & クエンチ後の TDVP 積分 & \code{data/B\{B\}/quench\_Ui\{..\}\_Uf\{..\}.npz} \\
+プロット & 保存データの可視化のみ & \code{*.png} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+各層は独立に再実行できる。静的解はキャッシュされ（$B=5$ で約25分、$B=7$ で数時間の
+計算が1回きりになる）、プロットは再計算なしに何度でも描き直せる。
+
+\section{物理の要点（実装が解いている方程式）}
+
+コードの規約（$n(\omega)$ は標準 Fermi 行列、$\Delta_e=\langle f^\dagger f\rangle$ 電子規約）で、
+$\Lambda=0$ ゲージの複素 TDVP：
+\begin{align}
+\Delta_e &= \langle f^\dagger f\rangle_\Phi, \qquad g=[\Delta_e(1-\Delta_e)]^{1/2},\\
+R &= g^{-1}\,\langle f^\dagger c\rangle_\Phi, \qquad
+B \;=\; \textstyle\sum_f w_f\, \omega_f\, n_f \quad(\text{複素のまま}),\\
+D &= \overline{\,g^{-1} B R\,}, \qquad
+M = R D^{\mathsf T} + \overline{D}\,R^\dagger,\\
+\Lambda^c &= +\bigl(\mathrm{d}g_{\Delta_e}[M]\bigr)^{\mathsf T}
+\quad(\text{Loewner 閉形式}),\\
+i\,\partial_t \Phi &= \hat H_{\rm emb}[D,\Lambda^c]\,\Phi, \qquad
+\partial_t n(\omega) = -i\omega\,[\,RR^\dagger,\,n(\omega)\,].
+\end{align}
+この組は拘束 $F_2=\|\Delta_e-\sum_f w_f n_f\|$ とエネルギーを厳密に保存する
+（証明は \file{derivation\_F2\_conservation\_proof.md} \S3, \S7。
+鍵は Loewner 恒等式 $[\Delta,\mathrm{d}g[M]]=[g(\Delta),M]$）。
+
+\subsection*{$\Lambda=0$ ゲージ = 自由度の厳密消去（2026-07-09 追記）}
+
+$\Lambda$ はエルミート $B\times B$ 行列で、一般には $B^2$ 個の実自由度を持つ。
+変分表示のうえでは $\Lambda$ は物理的な観測量を変えない\textbf{ゲージ冗長度}であり、
+上記 Loewner 恒等式のおかげで $\Lambda\equiv 0$ というゲージを初期時刻だけでなく
+\textbf{全時刻にわたって厳密に}維持できる（近似ではない）。この恒等式は
+$\Delta_e$（＝$U_i$ や状態そのもの）に依らない一般的な代数関係なので、
+「$U_i$ が小さいから許された」という話ではない
+（実測でも $B=3$, $U_i=0.05\to U_f=2.55$ の大クエンチで $|\Delta E/E|_{\max}=2.3\times10^{-7}$）。
+
+結果として力学変数は $(\Phi, n(\omega))$ だけになり、$\Lambda$ の $B^2$ 自由度は
+毎ステップの root-find（旧 Route C 方式）なしに完全に消去される。旧 Route C が
+$B\ge3$ でエネルギーを大きく破っていたのは、この消去が発見される前に $\Lambda$ を
+独立変数として反復的に解いていたことに加え、\file{solve\_lambda\_differential} 内の
+符号バグ（\file{derivation\_F2\_conservation\_proof.md} \S6）が重なったためであり、
+「動的 $\Lambda$ 方式が原理的に不可能」だったわけではない。ただ、上記の厳密消去が
+使える以上、それを使わない実装（Route C）を維持する理由がない。
+
+\section{ソルバー核：\file{td\_gGA\_solver\_paperconv.py}}
+
+唯一の「正しい」ソルバー。主要関数と対応する式：
+
+\begin{longtable}{p{0.34\textwidth}p{0.60\textwidth}}
+\toprule
+関数 & 責務 \\
+\midrule
+\code{solve\_static(B, U\_i, T)} & 静的 gGA 平衡解（\code{GA.optimize\_selfc} を呼ぶ薄いラッパ） \\
+\code{save\_static / load\_static} & 静的解の必要成分（$\Phi_0$, $\Lambda$, $D$, $\Lambda^c$, $R$,
+\code{fdaggerc}, \code{ffdagger}）を npz へ保存／GA を最適化なしで再構成して注入 \\
+\code{get\_static(B, U\_i, T)} & キャッシュがあれば load、なければ solve して save \\
+\midrule
+\code{hole\_cplx(Phi, params)} & $\langle f_j f_i^\dagger\rangle$（スピン平均、複素のまま。dense/sparse 自動判別） \\
+\code{fdc\_cplx(Phi, params)} & $\langle f^\dagger c\rangle$（同上） \\
+\code{g\_inv\_of(Delta)} & $[\Delta(1-\Delta)]^{-1/2}$（複素エルミート安全な eigh 実装） \\
+\code{loewner\_dg(Delta, M)} & Fr\'echet 微分 $\mathrm{d}g[M]$ の Loewner 閉形式
+（$\Lambda^c$ 用。基底ループ・least\_squares 不要） \\
+\code{compute\_RDLc\_paper} & 式 (1)--(4)：$\Phi, n \mapsto R, D, \Lambda^c, B$ \\
+\code{build\_H\_emb\_paper} & $\hat H_{\rm emb}$ を密行列で構築（$B\le 5$） \\
+\code{apply\_H\_emb\_sp} & $\hat H_{\rm emb}\Phi$ を疎行列積の和で直接評価（$B\ge 7$、近似なし） \\
+\code{prepare\_sparse\_params} & 演算子を疎のまま保持する軽量 params（$B\ge 6$ で自動選択） \\
+\code{rhs\_paper(t, y, params)} & TDVP の右辺：式 (5)（dense/sparse をディスパッチ） \\
+\midrule
+\code{run(B, U\_i, U\_f, ...)} & 1本のクエンチの全工程：初期条件構築 $\to$ RK4 積分
+$\to$ 観測量記録。戻り値 \code{rec} に $t, d, E, |\Delta E/E|, F_2,
+\sqrt{D^\dagger D}$, ghost split, $\mathrm{eig}\,\Lambda^c$ \\
+\code{save\_run(rec, ...)} & \code{rec} を \code{data/B\{B\}/} へ保存 \\
+\bottomrule
+\end{longtable}
+
+\subsection*{run() 内の初期条件構築（重要ポイント）}
+
+\begin{enumerate}
+\item $\Phi_0$ = 静的 ED の基底状態（npz 演算子基底）。$\Delta_{e,0}, R_0$ を $\Phi_0$ から再計算。
+\item ゲージ回転 $W=\code{permmat}\cdot\code{phasemat}\cdot\code{transmat}^{\mathsf T}$
+（\code{fix\_gauge} の変換行列）で $\Lambda_{\rm eq}=W\Lambda_{\rm imp}W^{\mathsf T}$。
+検証として $\|W R_{\rm imp}-R_0\|$ を表示。
+\item \textbf{$\pm\Lambda_{\rm rot}$ 符号自動選択}：半充填の PH 対称性により
+$(\Lambda,n)$ と $(-\Lambda,\text{PH鏡映 } n)$ が縮退した同値ラベルなので、
+両候補で $F_2^{\rm init}$ を測り小さい方を採用（$>10^{-3}$ なら root-refine）。
+$B=3$ は $+$、$B=5$ は $-$ が正解だった。
+\item $n_0(\omega)=f(\omega R_0R_0^{\mathsf T}+\Lambda_{\rm eq})$、
+\code{ic\_mod} フックで人工変形も可能（縮退多様体探索用）。
+\end{enumerate}
+
+\section{サポートモジュール（Lanat\`a 系レガシー。変更禁止）}
+
+\begin{longtable}{p{0.30\textwidth}p{0.64\textwidth}}
+\toprule
+ファイル & 役割 \\
+\midrule
+\file{ga\_mainfin\_routeA.py} & 静的 gGA ソルバー本体（クラス \code{GA}）。
+\code{optimize\_selfc}（$R,\Lambda$ の least\_squares）、\code{calc\_Delta}
+（$\int\rho f(\omega RR^{\mathsf T}+\Lambda)$）、\code{calc\_D}、\code{calc\_Lmbdac}
+（実対称 Loewner）、\code{fix\_gauge}（$\Lambda^c$ 対角化・$D$ 符号・並べ替えのゲージ固定） \\
+\file{ed\_solver.py} & 埋め込みハミルトニアンの厳密対角化。
+\code{build\_creation\_ops}（Fock 空間の $f^\dagger$）、\code{build\_op\_prods}
+（一体演算子積を npz 保存。\textbf{B ごとに同名上書き} $\Rightarrow$ 異なる $B$ の並走禁止）、
+\code{build\_Hemb}（疎行列で $\hat H_{\rm emb}$ 組立、$+10\hat S^2$ ペナルティ付き）、
+\code{solve\_Hemb}（\textbf{primme.eigsh による疎対角化} — $B=7$ でもそのまま動く）、
+\code{calc\_density\_matrix} \\
+\file{convenience\_routines.py} & \code{calc\_C}（Fermi 行列関数）、\code{funcMat}、
+\code{dF}（Loewner）、実対称基底の生成など \\
+\file{lattice.py} & 半円 DOS 等の格子情報 \\
+\file{td\_gGA\_solver\_routeA.py} & \code{prepare\_full\_params}（dense 演算子ロード、$B\le5$）、
+\code{setup\_frequency\_grid}（Gauss--Legendre $\times$ 半円 DOS） \\
+\file{td\_gGA\_solver\_routeC.py} & \code{pack\_state/unpack\_state}、
+\code{solve\_lambda\_from\_F2}（$\Lambda$ root-finding、フォールバック用）など \\
+\bottomrule
+\end{longtable}
+
+\textbf{注意}：\file{td\_gGA\_solver\_routeA.py}／\file{routeC.py} 自体の TD ソルバー部は
+規約バグ（転置・共役・符号の混在）を含むため使わない。ヘルパー提供のためだけに同梱。
+
+\section{実行スクリプトとプロット}
+
+\begin{longtable}{p{0.30\textwidth}p{0.64\textwidth}}
+\toprule
+ファイル & 役割 \\
+\midrule
+\file{run\_quench.py} & CLI：\code{--B 7 --dU 1.25 1.5 2.0 2.5 [--bare] [--tmax] [--dt]}。
+\code{get\_static}（キャッシュ）$\to$ \code{run} $\to$ \code{save\_run} \\
+\file{plot\_all.py} & \code{data/} を全部拾って
+\code{fig2a\_B.png}（$d(t)$、論文デジタイズ点重ね）・
+\code{fig2b\_B.png}（$\mathrm{eig}\,\Lambda^c$, $\sqrt{D^\dagger D}$）・
+\code{conservation\_B.png} を生成。\textbf{計算ゼロ} \\
+\file{run\_B135.py} & 一括実行版（$B=1,3,5$ 静的$+$TD$+$プロット。旧形式） \\
+\file{run\_fig2a.py}, \file{run\_fig2b.py} & 単発の図用ランナー（\code{plot\_all} 以前の形式） \\
+\file{compare\_digitized.py} & 論文 Fig.2a を PDF からデジタイズし
+（軸は目盛りマークで校正）、我々の曲線と定量比較 \\
+\file{run\_convergence.py} & $N_\text{freq}$/dt/$T$ 感度チェック \\
+\file{run\_dU\_definition.py} & $U_f=U_i+\delta U$ か $U_f=\delta U$ かの判別（$B=1$ 周期） \\
+\file{saddle\_scan.py} & 静的鞍点のシード探索（結果：引き込み点は単一） \\
+\file{migrate\_B135.py} & 旧一枚岩 npz $\to$ \code{data/} レイアウト移行 \\
+\bottomrule
+\end{longtable}
+
+\section{データフロー}
+
+\begin{center}
+\begin{minipage}{0.92\textwidth}
+\begin{lstlisting}
+[ga_mainfin_routeA + ed_solver]           [paperconv]
+ GA(U_i) 初期化 ── 演算子 npz 生成 ─────────┐
+ optimize_selfc ── 静的解 ── save_static ── static_cache/*.npz
+                                    │ (次回以降は load_static)
+                                    ▼
+ run():  Φ0, W, ±Λ_eq 選択, n0  ← 初期条件構築
+           │
+           ▼   RK4 (dt=0.01, t_max=10)
+ rhs_paper:  Φ,n → ffd,fdc → R,D,Λc → { H·Φ (dense/sparse),  -iω[RR†,n] }
+           │
+           ▼ observe (毎ステップ)
+ rec{t,d,E,dE,F2,√D†D,eigΛc} ── save_run ── data/B{B}/quench_*.npz
+                                                  │
+                                                  ▼
+ plot_all.py ──(+ paper_fig2a_digitized.npz)── fig2a_B / fig2b_B / conservation_B
+\end{lstlisting}
+\end{minipage}
+\end{center}
+
+\section{データ形式}
+
+\textbf{static\_cache/B\{B\}\_Ui\{U\_i\}\_T\{T\}.npz}：
+\code{eig\_vec}($\Phi_0$), \code{fdaggerc}, \code{ffdagger}, \code{Lmbda}, \code{D},
+\code{Lmbdac}, \code{R}, メタ (\code{B}, \code{U\_i}, \code{T\_gGA})。
+
+\medskip
+\textbf{data/B\{B\}/quench\_Ui\{..\}\_Uf\{..\}.npz}：
+\code{t}, \code{d}, \code{E}, \code{dE}($|\Delta E/E|$), \code{F2},
+\code{sqDtD}, \code{Dsplit}, \code{eigLc}（形 $N_t\times B$）, メタ (\code{B},\code{U\_i},\code{U\_f})。
+
+\medskip
+\textbf{paper\_fig2a\_digitized.npz}：論文 Fig.2a のデジタイズ
+（\code{tg/dg\_\{δU\}}=B1 破線, \code{tr/dr\_\{δU\}}=B3 赤）。
+\textbf{paper\_fig2a\_B57\_digitized.npz}：同 blue($B{=}5$)/green($B{=}7$)、$\delta U=2.0, 2.5$ のみ。
+
+\section{数値セッティング一覧}
+
+\subsection*{モデル・物理パラメータ}
+\begin{center}
+\begin{tabular}{llp{0.45\textwidth}}
+\toprule
+項目 & 既定値 & 備考 \\
+\midrule
+模型 & 単一バンド Hubbard, 半充填 & $\hat H=\frac{U}{2}\sum_i(\hat n_i-1)^2 - J\sum c^\dagger c$ \\
+格子 & ベーテ格子（配位数 $\infty$） & 半円 DOS $\rho(\omega)=\frac{2}{\pi}\sqrt{1-\omega^2}$ \\
+エネルギー単位 & 半バンド幅 $D=1$ & 時間単位は $D^{-1}$（論文と同一） \\
+$U_i$ & 0.05 & 論文脚注 [55]（$U{=}0$ は $B{\ge}3$ で縮退・不安定） \\
+$U_f$ & $U_i+\delta U$（\code{--bare} で $\delta U$） & 論文の $\delta U$ ラベルの定義は図の精度で判別不能
+（$B{=}1$ 周期の判別テスト参照） \\
+温度 $T$ & 0.003 & Fermi 関数の平滑化（準 $T{=}0$）。感度 $\Delta d\sim1.5\times10^{-5}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection*{時間発展（TD）}
+\begin{center}
+\begin{tabular}{llp{0.45\textwidth}}
+\toprule
+項目 & 既定値 & 備考 \\
+\midrule
+積分器 & 固定刻み RK4 & 各 RHS 評価で $\Phi$ を規格化 \\
+$dt$ & 0.01 & 感度チェック済み（$dt{=}0.005$ で $\Delta d\sim3\times10^{-6}$）。
+$B{=}5$ の $F_2$ ドリフト（$\sim10^{-3}$）を下げたい場合は半分に \\
+$t_{\max}$ & 10 & 論文 Fig.2 と同範囲 \\
+$N_\text{freq}$ & 60 & Gauss--Legendre 点 $\times\,\rho(\omega)$ 重み。
+収束確認済み（150/300 で $\Delta d\le1.6\times10^{-4}$） \\
+状態変数 & $\Phi \in \mathbb{C}^{\dim\Phi}$, $n(\omega)\in\mathbb{C}^{N_\text{freq}\times B\times B}$ &
+複素のまま伝播（\code{np.real} 禁止が鉄則） \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection*{静的計算・ED・初期条件}
+\begin{center}
+\begin{tabular}{llp{0.42\textwidth}}
+\toprule
+項目 & 既定値 & 備考 \\
+\midrule
+静的最適化 & \code{least\_squares}（$R$: $B$ 個 $+$ $\Lambda$: $B(B{+}1)/2$ 個） &
+シードは $R=[1,0,\dots]$, $\Lambda$ 係数 $=[1,0,\dots]$。
+収束残差 Max.error $\sim5\times10^{-4}$（$B{=}3$）が初期条件の質の下限 \\
+$\omega$ 積分（静的） & \code{scipy.integrate.quad}, epsabs $10^{-14}$ & \code{calc\_Delta} 内 \\
+ED & \code{primme.eigsh}, \code{num\_eig}=2, tol $10^{-12}$, `SA' & 疎行列のまま。$+10\,\hat S^2$
+ペナルティで一重項基底状態を選択 \\
+EH セクター & $1{+}B$ フェルミオン（半充填） & $\dim\Phi=\binom{2(1{+}B)}{1{+}B}$ \\
+$\Lambda_{\rm eq}$ 構築 & ゲージ回転 $W\Lambda_{\rm imp}W^{\mathsf T}$ + $\pm$ 符号自動選択 &
+$F_2^{\rm init}>10^{-3}$ なら \code{solve\_lambda\_from\_F2}（tol $10^{-10}$）で refine \\
+行列関数の保護 & $\Delta$ 固有値を $[10^{-12}, 1{-}10^{-12}]$ にクリップ &
+Loewner 核の縮退判定は $|\Delta\lambda|>10^{-9}$（それ以下は $g'$） \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection*{到達している保存精度（既定セッティングでの実測）}
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+ケース（$U_i{=}0.05\to U_f{=}2.55$, $t{=}10$） & $|\Delta E/E|_{\max}$ & $F_2^{\max}$ \\
+\midrule
+$B=1$ & $8\times10^{-10}$ & $1.2\times10^{-5}$（一定） \\
+$B=3$ & $2.3\times10^{-7}$ & $2.6\times10^{-5}$（一定） \\
+$B=5$ & $2.8\times10^{-5}$ & $1.2\times10^{-3}$（RK4 離散化誤差、$dt$ で低減可） \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{計算コストの目安}
+
+\begin{center}
+\begin{tabular}{lccccc}
+\toprule
+$B$ & $\dim\Phi$ & 演算子生成 & 静的（初回のみ） & TD 1クエンチ & パス \\
+\midrule
+1 & 6 & 一瞬 & 数秒 & 数秒 & dense \\
+3 & 70 & 数秒 & $\sim$1.5分 & 数秒 & dense \\
+5 & 924 & $\sim$1分 & $\sim$25分 & $\sim$20分 & dense（$\sim$1GB） \\
+7 & 12870 & $\sim$10分 & 数時間（見込み） & 数分（見込み） & \textbf{sparse} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+疎行列パスは近似なし（一体演算子の Fock 行列は 1 列あたり非零 $\le 1$）。
+$B=3$ で dense と厳密一致（$\max|\Delta d|=2\times10^{-13}$）を検証済み。
+
+\section{運用ルール}
+
+\begin{itemize}
+\item \textbf{異なる $B$ の計算を同一ディレクトリで並走させない}（演算子 npz が同名上書き）。
+\item 論文との比較は PPT 重ねでなく \file{compare\_digitized.py} の枠組みで定量的に。
+\item 新しい観測量は \code{run()} の \code{observe()} に追加 $\to$ \code{rec} に記録
+$\to$ \code{plot\_all.py} に描画を足す、が標準手順。
+\item 理論・経緯・展望はそれぞれ
+\file{derivation\_F2\_conservation\_proof.md}・\file{STATUS.md}
+（+\file{POSTMORTEM\_2026-07-07.md}）・\file{ROADMAP.md} を参照。
+\end{itemize}
+
+\end{document}
