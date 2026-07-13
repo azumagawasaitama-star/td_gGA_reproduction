@@ -147,20 +147,23 @@ $B=3$ は $+$、$B=5$ は $-$ が正解だった。
 \file{convenience\_routines.py} & \code{calc\_C}（Fermi 行列関数）、\code{funcMat}、
 \code{dF}（Loewner）、実対称基底の生成など \\
 \file{lattice.py} & 半円 DOS 等の格子情報 \\
-\file{tdvp\_core.py}（旧 \file{td\_gGA\_solver\_routeA.py}） & \code{setup\_frequency\_grid}
+\file{tdvp\_helpers.py}（旧 \file{td\_gGA\_solver\_routeA.py} +
+\file{td\_gGA\_solver\_routeC.py}） & \code{setup\_frequency\_grid}
 （Gauss--Legendre $\times$ 半円 DOS）、\code{pack\_state/unpack\_state}、
-\code{prepare\_full\_params}（dense 演算子ロード、$B\le5$）、\code{compute\_fdaggerc\_sp} \\
-\file{tdvp\_sparse.py}（旧 \file{td\_gGA\_solver\_routeC.py}） & \code{compute\_ffdagger\_sp}
-（$\langle f^\dagger f\rangle$）、\code{solve\_lambda\_from\_F2}（$\Lambda$ root-finding、
-初期条件 $\Lambda_{\rm eq}$ の算出用） \\
+\code{prepare\_full\_params}（dense 演算子ロード、$B\le5$）、
+\code{compute\_fdaggerc\_sp}、\code{compute\_ffdagger\_sp}（$\langle f^\dagger f\rangle$）、
+\code{solve\_lambda\_from\_F2}（$\Lambda$ root-finding、初期条件 $\Lambda_{\rm eq}$ の算出用） \\
 \bottomrule
 \end{longtable}
 
-\textbf{注意}：\file{tdvp\_core.py}／\file{tdvp\_sparse.py} は元々それぞれ独立した
-TD ソルバー本体（開発時の呼称で Route A／Route C）だったが、規約バグ（転置・共役・
-符号の混在）で B\(\ge\)3 の保存則・B 依存性の再現に失敗していた。2026-07-13 の配布
-パッケージ整理でこの未使用のドライバ本体は削除し、\file{td\_gGA\_solver.py} が実際に
-import して使うヘルパー関数のみを残した（両ファイル合計 1453 行 $\to$ 260 行）。
+\textbf{注意}：\file{tdvp\_helpers.py} は元々 \file{tdvp\_core.py}／\file{tdvp\_sparse.py}
+という2ファイルで、それぞれ独立した TD ソルバー本体（開発時の呼称で Route A／Route C）
+だったが、規約バグ（転置・共役・符号の混在）で B\(\ge\)3 の保存則・B 依存性の再現に
+失敗していた。2026-07-13 の配布パッケージ整理でこの未使用のドライバ本体は削除し、
+\file{td\_gGA\_solver.py} が実際に import して使うヘルパー関数のみを残した
+（2ファイル合計 1453 行 $\to$ 260 行）。統合後もファイル間の依存がゼロ
+（互いにimportし合っていなかった）ことを確認したうえで、分割する意味がなくなった
+ため1ファイルに統合した（260行）。
 
 \section{実行スクリプトとプロット}
 

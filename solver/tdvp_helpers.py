@@ -1,21 +1,29 @@
 """
-tdvp_core.py
+tdvp_helpers.py
 
 td_gGA_solver.py が使う基礎ヘルパー関数群:
   - setup_frequency_grid: バス周波数グリッド（Gauss-Legendre × 半円DOS）
   - pack_state/unpack_state: ODE状態ベクトルと (Φ, n(ω)) の相互変換
   - prepare_full_params: 演算子npzを読み込み密行列paramsを構築（B<=5想定）
-  - compute_fdaggerc_sp: |Φ⟩から⟨f†c⟩を計算
+  - compute_fdaggerc_sp: |Φ⟩から⟨f†c⟩を計算（sp=spatial、疎行列のsparseではない）
+  - compute_ffdagger_sp: |Φ⟩から⟨f†f⟩を計算
+  - solve_lambda_from_F2: 拘束 ∫ρf(ωRR†+Λ)=ffd_target を満たすΛを求める
+    （t=0の初期条件Λ_eq計算、および静的解との照合に使用）
 
-これらの関数はもともと Route A（このファイル自身の独自TD時間発展ドライバ、
-Λ=0固定・規約バグあり）のために書かれた。Route A のドライバ本体は使われて
-おらず、正しい実装は td_gGA_solver.py にある。ドライバ本体は削除済み
-（検証時の経緯は POSTMORTEM_2026-07-07.md, derivation_F2_conservation_proof.md 参照）。
+これらの関数はもともと2つの独立した開発時の呼称 Route A / Route C
+（それぞれ自前のTD時間発展ドライバを持つ実装一式）のために書かれた。
+どちらも規約バグ（符号・共役・転置の混在）でB>=3のエネルギー保存・B依存性の
+再現に失敗しており、正しい実装は td_gGA_solver.py にある。両ドライバ本体は
+削除済み（検証時の経緯は POSTMORTEM_2026-07-07.md,
+derivation_F2_conservation_proof.md 参照）。2026-07-13、旧 tdvp_core.py /
+tdvp_sparse.py への分割に実質的な意味がなくなった（互いへの依存もゼロ）ため
+1ファイルに統合。
 """
 import numpy as np
 import scipy.sparse as sp
 from math import comb
 from numpy.polynomial.legendre import leggauss
+from scipy.optimize import least_squares
 import convenience_routines as cr
 
 
@@ -167,7 +175,7 @@ def prepare_full_params(ga_obj, U_final, N_freq=100):
         'H_list': H_list,
         'H_list_arr': H_list_arr,
         'P_npz2imp': P_npz2imp,
-        'Lmbda_npz': np.zeros((nqspo, nqspo)),  # Route A: Λ=0 (TDVP consistent)
+        'Lmbda_npz': np.zeros((nqspo, nqspo)),  # Λ=0 gauge (TDVP consistent)
     }
     print(f"  Done. dim_Phi={dim_Phi}, nqspo={nqspo}, N_freq={N_freq}")
     return params
@@ -193,3 +201,51 @@ def compute_fdaggerc_sp(Phi, params):
     fdc_sp = np.array([[0.5 * (fdc[2 * i, 0] + fdc[2 * i + 1, 1])]
                        for i in range(nqspo)])
     return fdc_sp  # (nqspo, 1)
+
+
+# ============================================================
+# Bath-bath density matrix from |Φ⟩
+# ============================================================
+def compute_ffdagger_sp(Phi, params):
+    """
+    Compute the electron density matrix ⟨Φ|f†_i f_j|Φ⟩ (spatial, spin-averaged).
+    Returns (nqspo, nqspo) real matrix.
+
+    Note: op_bb[i,j] = f_j f†_i (lreverse=True), so
+          ⟨op_bb[i,j]⟩ = δ_{ij} - ⟨f†_i f_j⟩  (hole density).
+    We return the electron density: I - hole.
+    """
+    op_bb = params['op_bb']
+    nqspo = params['nqspo']
+    Phi_c = np.conj(Phi)
+    hole = np.array([[0.5 * (np.real(Phi_c @ (op_bb[2 * i, 2 * j] @ Phi)) +
+                             np.real(Phi_c @ (op_bb[2 * i + 1, 2 * j + 1] @ Phi)))
+                      for j in range(nqspo)]
+                     for i in range(nqspo)])
+    return np.eye(nqspo) - hole  # ⟨f†f⟩ = I - hole
+
+
+# ============================================================
+# Λ solver: algebraic F2(Λ) = 0 (used for initialization only)
+# ============================================================
+def solve_lambda_from_F2(ffd_target, R, Lmbda_init,
+                          omega_arr, w_rho, T,
+                          H_list, tol=1e-8, maxiter=100):
+    """
+    Find Λ such that ∫ρ(ω) f(ω RR† + Λ) dω = ffd_target.
+    Used for initialization (t=0) and post-processing only.
+    """
+    RRt = R @ R.T
+
+    def residual(lmbda_vec):
+        Lmbda = cr.realHcombination(lmbda_vec, H_list)
+        Delta_L = np.einsum('f,fab->ab', w_rho,
+                            np.array([cr.calc_C(RRt * om + Lmbda, T=T)
+                                      for om in omega_arr]))
+        F2 = Delta_L - ffd_target
+        return cr.inverse_realHcombination(F2, H_list)
+
+    lmbda0 = cr.inverse_realHcombination(Lmbda_init, H_list)
+    res = least_squares(residual, lmbda0, method='lm',
+                        ftol=tol, xtol=tol, gtol=tol, max_nfev=maxiter)
+    return cr.realHcombination(res.x, H_list)

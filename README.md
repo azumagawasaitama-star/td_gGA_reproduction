@@ -61,8 +61,7 @@ td_gGA_reproduce/
 ├── reference_figures/                     完成版の図（見比べ用）
 └── solver/                                コード一式（下記）
     ├── td_gGA_solver.py                    ★メインの時間発展ソルバー（run/solve_static等）
-    ├── tdvp_core.py                        ソルバーが使う基礎ヘルパー(演算子ロード・pack/unpack等)
-    ├── tdvp_sparse.py                      同上、⟨f†f⟩計算とΛ初期値ソルバー
+    ├── tdvp_helpers.py                     ソルバーが使う基礎ヘルパー一式(演算子ロード・pack/unpack・⟨f†f⟩計算・Λ初期値ソルバー等)
     ├── gga_static_solver.py                静的gGAソルバー(GAクラス、クエンチ前の平衡状態を解く)
     ├── ed_solver.py                        埋め込みハミルトニアンの厳密対角化
     ├── convenience_routines.py             汎用の行列補助関数
@@ -96,19 +95,20 @@ td_gGA_reproduce/
 | 旧名（開発リポジトリ） | 新名（本パッケージ） | 役割 |
 |---|---|---|
 | `td_gGA_solver_paperconv.py` | `td_gGA_solver.py` | 実際に使う、正しい時間発展ソルバー |
-| `td_gGA_solver_routeA.py` | `tdvp_core.py` | ヘルパー関数群のみ（自身の時間発展ドライバは削除済み） |
-| `td_gGA_solver_routeC.py` | `tdvp_sparse.py` | ヘルパー関数群のみ（自身の時間発展ドライバは削除済み） |
+| `td_gGA_solver_routeA.py` + `td_gGA_solver_routeC.py` | `tdvp_helpers.py`（統合） | ヘルパー関数群のみ（自身の時間発展ドライバは削除済み） |
 | `ga_mainfin_routeA.py` | `gga_static_solver.py` | 静的解（クエンチ前の平衡状態）を解く |
 
-`td_gGA_solver_routeA.py`/`td_gGA_solver_routeC.py`（現 `tdvp_core.py`/`tdvp_sparse.py`）は
-元々それぞれ独立した「独自の時間発展ドライバ」一式だった（開発時の呼称で Route A / Route C）。
+`td_gGA_solver_routeA.py`/`td_gGA_solver_routeC.py`は元々それぞれ独立した
+「独自の時間発展ドライバ」一式だった（開発時の呼称で Route A / Route C）。
 どちらも規約バグ（符号・共役・転置の混在）で B≥3 のエネルギー保存や B 依存性の再現に
 失敗しており、最終的に正しい規約で書き直したのが `td_gGA_solver.py` である。
 2026-07-13 の配布パッケージ整理で、この2ファイルから **未使用のドライバ本体を削除**し、
 `td_gGA_solver.py` が実際に import して使っているヘルパー関数だけを残した
-（`tdvp_core.py`: 661→195行、`tdvp_sparse.py`: 792→65行、`gga_static_solver.py`も
-未使用メソッドを削除して1359→757行。全体で3273→1476行、約55%削減）。
-経緯の詳細は `POSTMORTEM_2026-07-07.md` を参照。
+（旧`tdvp_core.py`: 661→195行、旧`tdvp_sparse.py`: 792→65行）。
+削除後は2ファイルが互いに一切依存していない（Route A/C時代の相互依存が解消された）
+ことを確認したうえで、分割しておく意味がなくなったため `tdvp_helpers.py` 1本に統合。
+`gga_static_solver.py`も未使用メソッドを削除して1359→757行。
+全体で3273→1476行、約55%削減。経緯の詳細は `POSTMORTEM_2026-07-07.md` を参照。
 
 ## 到達している精度（既定セッティング）
 

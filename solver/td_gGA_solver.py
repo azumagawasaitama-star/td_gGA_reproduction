@@ -33,8 +33,10 @@ os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
 import numpy as np
 import time as _time
 import convenience_routines as cr
-from tdvp_core import prepare_full_params, pack_state, unpack_state, compute_fdaggerc_sp
-from tdvp_sparse import compute_ffdagger_sp, solve_lambda_from_F2
+from tdvp_helpers import (
+    prepare_full_params, pack_state, unpack_state, compute_fdaggerc_sp,
+    compute_ffdagger_sp, solve_lambda_from_F2, setup_frequency_grid,
+)
 
 
 # ---------- 期待値ヘルパ（複素のまま; dense/sparse 両対応） ----------
@@ -144,7 +146,6 @@ def prepare_sparse_params(ga, U_final, N_freq):
     """B≥7 用: 演算子を疎行列のまま保持する軽量 params（dense 版と同じキー体系の必要分のみ）"""
     import scipy.sparse as sp
     from math import comb as _comb
-    from tdvp_core import setup_frequency_grid
     ed = ga.imp_solver
     dim_Phi = ed.hsize_half; nq = ga.nqspo
     imp_nr = ed.impurity_nr; imp_type = ed.impurity_type
